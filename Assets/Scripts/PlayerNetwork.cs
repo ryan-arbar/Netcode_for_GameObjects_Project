@@ -1,104 +1,152 @@
-using System.Collections;
-using System.Collections.Generic;
-using Unity.Collections;
 using Unity.Netcode;
 using UnityEngine;
 
 public class PlayerNetwork : NetworkBehaviour
 {
-    [SerializeField] private GameObject spawnedObjectPrefab;
+    [SerializeField] private Rigidbody ballRigidbody;
 
-    private GameObject spawnedObjectTransform;
+    // Movement variables
+    public float moveSpeed = 5.0f;
+    public float maxVelocity = 10f;
+    public float acceleration = 60f;
+    public float deceleration = 40f;
+    public float airControlStrength = 2f;
+    public float jumpForce = 7f;
+    public float pushForce = 5.0f;
 
-    private NetworkVariable<MyCustomData> randomNumber = new NetworkVariable<MyCustomData>
-        (new MyCustomData
-        {
-            _int = 56,
-            _bool = true,
-        }, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+    public LayerMask groundLayer;
+    public float groundCheckDistance = 0.5f;
 
-    public struct MyCustomData : INetworkSerializable
+    public PlayerAudio playerAudio;
+    private AudioSource rollingAudioSource;
+    public AudioClip rollingClip;
+    public float volumeScale = 0.5f;
+    public float pitchScale = 0.1f;
+
+    public Team team;
+
+    private void Start()
     {
-        public int _int;
-        public bool _bool;
-        public FixedString128Bytes message;
+        rollingAudioSource = gameObject.AddComponent<AudioSource>();
+        rollingAudioSource.clip = rollingClip;
+        rollingAudioSource.loop = true;
+        rollingAudioSource.playOnAwake = false;
+    }
 
-        public void NetworkSerialize<T>(BufferSerializer<T> serializer) where T : IReaderWriter
+    // Only control local client ball
+    void FixedUpdate()
+    {
+        if (!IsOwner || !Application.isFocused) return;
+
+        bool isGrounded = IsGrounded();
+
+        if (IsGrounded())
         {
-            serializer.SerializeValue(ref _int);
-            serializer.SerializeValue(ref _bool);
-            serializer.SerializeValue(ref message);
+            HandlePhysicsMovement();
+        }
+        else
+        {
+            HandleAirControl();
+        }
+
+        ManageRollingSound(isGrounded);
+    }
+
+    // Plays rolling sound only if player is above certain velocity on the ground
+    private void ManageRollingSound(bool isGrounded)
+    {
+        if (isGrounded && ballRigidbody.velocity.magnitude > 0.1f)
+        {
+            float velocityRatio = ballRigidbody.velocity.magnitude / maxVelocity;
+            playerAudio.PlayRollingSound(velocityRatio);
+        }
+        else
+        {
+            playerAudio.StopRollingSound();
         }
     }
 
+    public void ChooseTeam(int teamId)
+    {
+        CmdChooseTeamServerRpc(teamId);
+    }
+
+    // Server handling team selection and spawning
+    [ServerRpc(RequireOwnership = false)]
+    public void CmdChooseTeamServerRpc(int teamId, ServerRpcParams rpcParams = default)
+    {
+        GlobalGameManager.Instance.SpawnTeamPrefab(teamId, OwnerClientId);
+    }
+
+    // Camera follows ball prefab being controlled by local client
     public override void OnNetworkSpawn()
     {
-        randomNumber.OnValueChanged += (MyCustomData previousValue, MyCustomData newValue) =>
+        if (IsLocalPlayer)
         {
-            Debug.Log(OwnerClientID + "; "+ newValue._int + "; " + newValue._bool + "; " + newValue.message);
-        };
-    }
-
-    public string OwnerClientID { get; private set; }
-
-    private void Update()
-    {
-
-        if (!IsOwner) return;
-
-        if (Input.GetKeyDown(KeyCode.T))
-        {
-            spawnedObjectTransform = Instantiate(spawnedObjectPrefab);
-            spawnedObjectTransform.GetComponent<NetworkObject>().Spawn(true);
-
-
-
-            TestServerRpc("RPC I hate Mondays");
-            //TestServerRpc(new ServerRpcParams());
-            TestClientRpc(new ClientRpcParams
+            CameraFollowTarget cameraFollow = FindObjectOfType<CameraFollowTarget>();
+            if (cameraFollow != null)
             {
-                Send = new ClientRpcSendParams { TargetClientIds = new List<ulong> { 1 } } } );
-
-            /*
-            randomNumber.Value = new MyCustomData
-            {
-                _int = 10,
-                _bool = false,
-                message = "I hate Mondays"
-            };
-            */
+                cameraFollow.SetTarget(gameObject);
+            }
         }
+    }
 
-        if (Input.GetKeyDown(KeyCode.Y))
+    // WASD movement for ball
+    private void HandlePhysicsMovement()
+    {
+        Vector3 input = new Vector3(Input.GetAxis("Horizontal"), 0.0f, Input.GetAxis("Vertical")).normalized;
+        Vector3 force = input * acceleration - ballRigidbody.velocity * deceleration;
+        force.y = 0; // Do not affect vertical movement
+
+        ballRigidbody.AddForce(force, ForceMode.Acceleration);
+
+        Vector3 horizontalVelocity = new Vector3(ballRigidbody.velocity.x, 0, ballRigidbody.velocity.z);
+        if (horizontalVelocity.magnitude > maxVelocity)
         {
-            Destroy(spawnedObjectTransform.gameObject);
+            ballRigidbody.velocity = horizontalVelocity.normalized * maxVelocity + Vector3.up * ballRigidbody.velocity.y;
         }
-
-        Vector3 moveDir = new Vector3(0, 0, 0);
-
-        if (Input.GetKey(KeyCode.W)) moveDir.z = +1f;
-        if (Input.GetKey(KeyCode.S)) moveDir.z = -1f;
-        if (Input.GetKey(KeyCode.A)) moveDir.x = -1f;
-        if (Input.GetKey(KeyCode.D)) moveDir.x = +1f;
-
-        float moveSpeed = 3f;
-        transform.position += moveDir * moveSpeed * Time.deltaTime;
     }
 
-    [ServerRpc]
-    private void TestServerRpc(string message)
+    // Give player a little control of movement while in air
+    private void HandleAirControl()
     {
-        Debug.Log("TestServerRpc " + OwnerClientID + "; " + message);
+        Vector3 input = new Vector3(Input.GetAxis("Horizontal"), 0.0f, Input.GetAxis("Vertical"));
+        Vector3 force = input * airControlStrength;
+        force.y = 0; // Maintain current vertical velocity
+
+        ballRigidbody.AddForce(force, ForceMode.Acceleration);
     }
 
-    /*private void TestServerRpc(ServerRpcParams serverRpcParams)
+    void Update()
     {
-        Debug.Log("TestServerRpc " + OwnerClientID + "; " + serverRpcParams.Receive.SenderClientId);
-    }*/
+        if (IsOwner && Input.GetButtonDown("Jump") && IsGrounded())
+        {
+            ballRigidbody.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
+            playerAudio.PlayJumpSound();
+        }
+    }
 
-    [ClientRpc]
-    private void TestClientRpc(ClientRpcParams clientRpcParams)
+    // Ground logic for detecting the ground for jumping
+    private bool IsGrounded()
     {
-        Debug.Log("TestClientRpc");
+        return Physics.Raycast(transform.position, -Vector3.up, groundCheckDistance, groundLayer);
+    }
+
+    // When players collide with each other, there is a small force that knocks them back
+    // (Does not work very well, but I'm leaving it)
+    void OnCollisionEnter(Collision collision)
+    {
+        if (collision.gameObject.CompareTag("Player"))
+        {
+            Vector3 direction = collision.transform.position - transform.position;
+            direction.y = 0;
+            direction.Normalize();
+
+            Rigidbody otherRigidbody = collision.gameObject.GetComponent<Rigidbody>();
+            if (otherRigidbody != null)
+            {
+                otherRigidbody.AddForce(direction * pushForce, ForceMode.Impulse);
+            }
+        }
     }
 }

@@ -133,8 +133,23 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a5042b334f3b3e941a906adc19e9585a, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  spawnedObjectPrefab: {fileID: 3230000458270623918, guid: 9ea41b0229d88914e9d16b2b979ed695,
-    type: 3}
+  ballRigidbody: {fileID: 0}
+  moveSpeed: 5
+  maxVelocity: 10
+  acceleration: 60
+  deceleration: 40
+  airControlStrength: 2
+  jumpForce: 7
+  pushForce: 5
+  groundLayer:
+    serializedVersion: 2
+    m_Bits: 0
+  groundCheckDistance: 0.5
+  playerAudio: {fileID: 0}
+  rollingClip: {fileID: 0}
+  volumeScale: 0.5
+  pitchScale: 0.1
+  team: 0
 --- !u!114 &-6119236013085007225
 MonoBehaviour:
   m_ObjectHideFlags: 0
